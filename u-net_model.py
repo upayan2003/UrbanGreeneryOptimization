@@ -1,18 +1,20 @@
 import os
 import glob
 import cv2
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-from tqdm import tqdm
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.functional as TF
+from tqdm import tqdm
+import warnings
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+warnings.filterwarnings("ignore")
 
 # -------------------- Configuration --------------------
 DATA_DIR = 'greenery_dataset'
@@ -20,7 +22,7 @@ AUGMENTED_DIR = 'augmented_train'
 MODEL_SAVE_PATH = "unet_greenery_model.pth"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 2
-NUM_EPOCHS = 15
+NUM_EPOCHS = 10
 LEARNING_RATE = 1e-5
 IMAGE_HEIGHT = 256
 IMAGE_WIDTH = 256
@@ -152,16 +154,12 @@ class DiceBCEWithLogitsLoss(nn.Module):
 def get_dataloaders(train_img_dir, train_mask_dir, val_img_dir, val_mask_dir, batch_size):
     train_transform = A.Compose([
         A.Resize(IMAGE_HEIGHT, IMAGE_WIDTH),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        # <--- FIX: Removed max_pixel_value for correct float normalization
         A.Normalize(mean=DATASET_MEAN, std=DATASET_STD),
         ToTensorV2(),
     ])
 
     val_transform = A.Compose([
         A.Resize(IMAGE_HEIGHT, IMAGE_WIDTH),
-        # <--- FIX: Removed max_pixel_value
         A.Normalize(mean=DATASET_MEAN, std=DATASET_STD),
         ToTensorV2(),
     ])
@@ -175,40 +173,48 @@ def get_dataloaders(train_img_dir, train_mask_dir, val_img_dir, val_mask_dir, ba
     return train_loader, val_loader
 
 # -------------------- Training & Evaluation --------------------
-def check_accuracy(loader, model, device=DEVICE):
+def check_accuracy(loader, model, criterion, device=DEVICE):
     num_correct = 0
     num_pixels = 0
     dice_score = 0
+    total_val_loss = 0
     model.eval()
 
     with torch.no_grad():
-        for x, y in loader:
-            x = x.to(device)
-            y = y.to(device).unsqueeze(1) # Add channel dim
-            
-            # <--- FIX: Changed logic from argmax to sigmoid + threshold for single-channel output
-            logits = model(x)
-            preds = (torch.sigmoid(logits) > 0.5).float()
-            
-            num_correct += (preds == y).sum()
-            num_pixels += torch.numel(preds)
-            dice_score += (2 * (preds * y).sum()) / ((preds + y).sum() + 1e-8)
+            for x, y in loader:
+                x = x.to(device)
+                y_for_loss = y.to(device).unsqueeze(1).float()
+                y_for_metrics = y.to(device).unsqueeze(1)
+                
+                logits = model(x)
+                
+                loss = criterion(logits, y_for_loss)
+                total_val_loss += loss.item()
+                
+                preds = (torch.sigmoid(logits) > 0.5).float()
+                
+                num_correct += (preds == y_for_metrics).sum()
+                num_pixels += torch.numel(preds)
+                dice_score += (2 * (preds * y_for_metrics).sum()) / ((preds + y_for_metrics).sum() + 1e-8)
 
     accuracy = num_correct / num_pixels
     avg_dice = dice_score / len(loader)
+    avg_val_loss = total_val_loss / len(loader)
     
-    print(f"\nValidation Accuracy: {accuracy*100:.2f}%")
-    print(f"Dice Score: {avg_dice:.4f}")
+    print(f"\nValidation Loss: {avg_val_loss:.4f}")
+    print(f"Validation Accuracy: {accuracy*100:.2f}%")
+    print(f"Dice Score: {avg_dice:.4f}\n")
     
     model.train()
-    return accuracy, avg_dice
+    return avg_val_loss, accuracy, avg_dice
 
 def train_model(model, train_loader, val_loader, device):
     pos_weight_tensor = torch.tensor([POS_WEIGHT], device=device)
     criterion = DiceBCEWithLogitsLoss(pos_weight=pos_weight_tensor)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=2, factor=0.1)
 
-    history = {'train_loss': [], 'val_acc': [], 'val_dice': []}
+    history = {'train_loss': [], 'val_loss': [], 'val_acc': [], 'val_dice': []}
     
     for epoch in range(NUM_EPOCHS):
         model.train()
@@ -231,9 +237,17 @@ def train_model(model, train_loader, val_loader, device):
         avg_loss = total_loss / len(train_loader)
         history['train_loss'].append(avg_loss)
         
-        val_acc, val_dice = check_accuracy(val_loader, model, device=device)
+        avg_val_loss, val_acc, val_dice = check_accuracy(val_loader, model, criterion, device=device)
+        history['val_loss'].append(avg_val_loss)
         history['val_acc'].append(val_acc.item())
         history['val_dice'].append(val_dice.item())
+
+        old_lr = optimizer.param_groups[0]['lr']
+        scheduler.step(val_dice)
+        new_lr = optimizer.param_groups[0]['lr']
+
+        if old_lr > new_lr:
+            print(f"\nLearning rate reduced from {old_lr} to {new_lr}")
 
     torch.save(model.state_dict(), MODEL_SAVE_PATH)
     print(f"Model saved to {MODEL_SAVE_PATH}")
@@ -276,21 +290,32 @@ def plot_and_save_graphs(history, save_path="training_plots.png"):
     epochs = range(1, len(history['train_loss']) + 1)
     plt.figure(figsize=(15, 5))
 
-    plt.subplot(1, 2, 1)
+    plt.subplot(1, 3, 1)
     plt.plot(epochs, history['train_loss'], 'bo-', label='Training Loss')
-    plt.title('Training Loss'); plt.xlabel('Epochs'); plt.ylabel('Loss')
-    plt.legend(); plt.grid(True)
+    plt.plot(epochs, history['val_loss'], 'ro-', label='Validation Loss')
+    plt.title('Loss Graphs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True)
 
-    plt.subplot(1, 2, 2)
-    plt.plot(epochs, [acc * 100 for acc in history['val_acc']], 'ro-', label='Validation Accuracy (%)')
-    plt.plot(epochs, history['val_dice'], 'go-', label='Validation Dice Score')
-    
-    plt.title('Validation Metrics'); plt.xlabel('Epochs'); plt.ylabel('Score')
-    plt.legend(); plt.grid(True)
+    plt.subplot(1, 3, 2)
+    plt.plot(epochs, [acc * 100 for acc in history['val_acc']], 'ro-')
+    plt.title('Validation Accuracy over Epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Validation Accuracy (%)')
+    plt.grid(True)
+
+    plt.subplot(1, 3, 3)
+    plt.plot(epochs, history['val_dice'], 'go-')
+    plt.title('Validation Dice Score over Epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Dice Score')
+    plt.grid(True)
 
     plt.tight_layout()
     plt.savefig(save_path)
-    plt.close() # Close plot to free memory
+    plt.close()
     print(f"Training plots saved to {save_path}")
 
 # -------------------- Main Execution --------------------
