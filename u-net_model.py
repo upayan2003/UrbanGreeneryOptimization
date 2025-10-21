@@ -181,21 +181,21 @@ def check_accuracy(loader, model, criterion, device=DEVICE):
     model.eval()
 
     with torch.no_grad():
-            for x, y in loader:
-                x = x.to(device)
-                y_for_loss = y.to(device).unsqueeze(1).float()
-                y_for_metrics = y.to(device).unsqueeze(1)
-                
-                logits = model(x)
-                
-                loss = criterion(logits, y_for_loss)
-                total_val_loss += loss.item()
-                
-                preds = (torch.sigmoid(logits) > 0.5).float()
-                
-                num_correct += (preds == y_for_metrics).sum()
-                num_pixels += torch.numel(preds)
-                dice_score += (2 * (preds * y_for_metrics).sum()) / ((preds + y_for_metrics).sum() + 1e-8)
+        for x, y in loader:
+            x = x.to(device)
+            y_for_loss = y.to(device).unsqueeze(1).float()
+            y_for_metrics = y.to(device).unsqueeze(1)
+            
+            logits = model(x)
+            
+            loss = criterion(logits, y_for_loss)
+            total_val_loss += loss.item()
+            
+            preds = (torch.sigmoid(logits) > 0.5).float()
+            
+            num_correct += (preds == y_for_metrics).sum()
+            num_pixels += torch.numel(preds)
+            dice_score += (2 * (preds * y_for_metrics).sum()) / ((preds + y_for_metrics).sum() + 1e-8)
 
     accuracy = num_correct / num_pixels
     avg_dice = dice_score / len(loader)
