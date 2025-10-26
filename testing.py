@@ -155,6 +155,7 @@ def evaluate_and_save_predictions(loader, model, folder, device):
     num_correct = 0
     num_pixels = 0
     dice_score = 0
+    iou_score = 0  # <-- NEW: Initialize IoU score
     model.eval()
 
     with torch.no_grad():
@@ -165,11 +166,19 @@ def evaluate_and_save_predictions(loader, model, folder, device):
             preds = torch.sigmoid(model(x))
             preds_binary = (preds > 0.5).float()
 
+            # --- Calculate metrics for the batch ---
             num_correct += (preds_binary == y_gpu).sum()
             num_pixels += torch.numel(preds_binary)
+            
+            # Calculate Dice
             dice_score += (2 * (preds_binary * y_gpu).sum()) / (
                 (preds_binary + y_gpu).sum() + 1e-8
             )
+            
+            # --- NEW: Calculate IoU (Intersection over Union) ---
+            intersection = (preds_binary * y_gpu).sum()
+            union = preds_binary.sum() + y_gpu.sum() - intersection + 1e-8
+            iou_score += (intersection / union)
 
             # --- Save visual output ---
             x_rgb = x[:, :3, :, :].permute(0, 2, 3, 1).cpu().numpy()
@@ -191,12 +200,15 @@ def evaluate_and_save_predictions(loader, model, folder, device):
                 img_index = i * loader.batch_size + j
                 cv2.imwrite(os.path.join(folder, f"prediction_{img_index}.png"), cv2.cvtColor(combined_image, cv2.COLOR_RGB2BGR))
 
+    # --- Print final metrics ---
     final_accuracy = num_correct / num_pixels
     final_dice = dice_score / len(loader)
+    final_iou = iou_score / len(loader) # <-- NEW: Calculate final IoU
 
     print(f"\n--- Test Results ---")
     print(f"Pixel Accuracy: {final_accuracy*100:.2f}%")
     print(f"Dice Score: {final_dice:.4f}")
+    print(f"IoU Score: {final_iou:.4f}") # <-- NEW: Print IoU score
     print(f"Predictions saved to '{folder}'")
 
 
