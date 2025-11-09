@@ -256,7 +256,7 @@ def train_model(model, train_loader, val_loader, device):
     return history
 
 # -------------------- Prediction & Visualization --------------------
-def predict_and_visualize(model, img_path, device, save_path="prediction.png"):
+def predict_and_visualize(model, img_path, device, save_path="prediction.png", mask_path="mask.tif"):
     model.eval()
     
     image = np.nan_to_num(cv2.imread(img_path, cv2.IMREAD_UNCHANGED), nan=0.0)
@@ -280,13 +280,16 @@ def predict_and_visualize(model, img_path, device, save_path="prediction.png"):
         preds = (torch.sigmoid(logits) > 0.5).squeeze(0).squeeze(0).cpu().numpy().astype(np.uint8)
         
     overlay = np.zeros_like(original_image_vis, dtype=np.uint8)
-    overlay[preds == 1] = [255, 255, 255]
+    overlay[preds == 1] = [0, 255, 0]
     
     overlay_resized = cv2.resize(overlay, (original_image_vis.shape[1], original_image_vis.shape[0]), interpolation=cv2.INTER_NEAREST)
     blended = cv2.addWeighted(original_image_vis, 1, overlay_resized, 0.6, 0)
     
+    cv2.imwrite(mask_path, overlay_resized)
+    print(f"Greenery mask saved to {mask_path}")
+    
     cv2.imwrite(save_path, cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
-    print(f"Prediction saved to {save_path}")
+    print(f"Prediction (RGB image + mask overlay) saved to {save_path}")
 
 def plot_and_save_graphs(history, save_path="training_plots.png"):
     epochs = range(1, len(history['train_loss']) + 1)
