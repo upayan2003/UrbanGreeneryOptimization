@@ -9,7 +9,7 @@ import albumentations as A
 
 # -------------------- Configuration --------------------
 MODEL_SAVE_PATH = "unet_greenery_model.pth"
-TARGET_DIR = "greenery_dataset/test/images" # Replace with your test images directory
+TARGET_DIR = "target" # Replace with your test images directory
 OUTPUT_DIR = "predictions"
 
 IMAGE_HEIGHT, IMAGE_WIDTH = 256, 256
@@ -35,30 +35,32 @@ image_paths = sorted(glob.glob(os.path.join(TARGET_DIR, "*.tif")))
 if not image_paths:
     print("No target images found to run prediction.")
 else:
-    print(f"Found {len(image_paths)} images in {TARGET_DIR}")
+    print(f"Found {len(image_paths)} images in {TARGET_DIR}\n")
+
     for img_path in image_paths:
         base_name = os.path.splitext(os.path.basename(img_path))[0]
-
-        overlay_path = os.path.join(OUTPUT_DIR, f"{base_name}_overlay.png")
         mask_path = os.path.join(OUTPUT_DIR, f"{base_name}_mask.tif")
+        blended_path = os.path.join(OUTPUT_DIR, f"{base_name}_prediction.png")
 
         print(f"Processing: {base_name}")
 
-        model.eval()
+        # Read and preprocess
         image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
         if image is None:
             print(f"Warning: Could not read {img_path}, skipping.")
             continue
+
+        image = np.nan_to_num(image, nan=0.0)
 
         transform = A.Compose([
             A.Resize(IMAGE_HEIGHT, IMAGE_WIDTH),
             A.Normalize(mean=DATASET_MEAN, std=DATASET_STD, max_pixel_value=MAX_PIXEL),
             ToTensorV2(),
         ])
-
-        augmented = transform(image=np.nan_to_num(image, nan=0.0))
+        augmented = transform(image=image)
         input_tensor = augmented["image"].unsqueeze(0).to(DEVICE)
 
+        # Prediction
         with torch.no_grad():
             logits = model(input_tensor)
             preds = (torch.sigmoid(logits) > 0.5).squeeze().cpu().numpy().astype("uint8")
@@ -67,8 +69,12 @@ else:
             preds, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST
         )
 
-        cv2.imwrite(mask_path, preds_resized * 255)
-        predict_and_visualize(model, img_path, device=DEVICE, save_path=overlay_path)
+        predict_and_visualize(
+            model=model,
+            img_path=img_path,
+            device=DEVICE,
+            save_path=blended_path,
+            overlay_path=mask_path
+        )
 
     print(f"\nAll predictions saved in '{OUTPUT_DIR}' folder.")
-
