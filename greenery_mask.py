@@ -74,7 +74,7 @@ else:
             img_path=img_path,
             device=DEVICE,
             save_path=blended_path,
-            overlay_path=mask_path
+            mask_path=mask_path
         )
 
     print(f"\nAll predictions saved in '{OUTPUT_DIR}' folder.")
